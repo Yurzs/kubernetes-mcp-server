@@ -403,6 +403,31 @@ func (s *AccessControlRoundTripperTestSuite) TestRoundTripForDeniedAPIResources(
 
 	})
 
+
+	s.Run("Redacted fields entries allow access", func() {
+		s.Require().NoError(toml.Unmarshal([]byte(`
+			denied_resources = [ { version = "v1", kind = "Pod", redacted_fields = ["spec.containers.*.env.*.value"] } ]
+		`), rt.deniedResourcesProvider), "Expected to parse redacted resources config")
+
+		s.Run("Get pod is allowed when redacted_fields is set", func() {
+			delegateCalled = false
+			req := httptest.NewRequest("GET", "/api/v1/namespaces/default/pods/my-pod", nil)
+			resp, err := rt.RoundTrip(req)
+			s.NoError(err)
+			s.NotNil(resp)
+			s.True(delegateCalled, "Expected delegate to be called for resource with redacted_fields")
+		})
+
+		s.Run("List pods is allowed when redacted_fields is set", func() {
+			delegateCalled = false
+			req := httptest.NewRequest("GET", "/api/v1/pods", nil)
+			resp, err := rt.RoundTrip(req)
+			s.NoError(err)
+			s.NotNil(resp)
+			s.True(delegateCalled, "Expected delegate to be called for resource list with redacted_fields")
+		})
+	})
+
 	s.Run("RESTMapper error for unknown resource", func() {
 		rt.deniedResourcesProvider = nil
 		delegateCalled = false

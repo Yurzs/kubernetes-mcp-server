@@ -53,14 +53,22 @@ type ExtendedConfigProvider interface {
 }
 
 type GroupVersionKind struct {
-	Group   string `json:"group" toml:"group"`
-	Version string `json:"version" toml:"version"`
-	Kind    string `json:"kind,omitempty" toml:"kind,omitempty"`
+	Group          string   `json:"group" toml:"group"`
+	Version        string   `json:"version" toml:"version"`
+	Kind           string   `json:"kind,omitempty" toml:"kind,omitempty"`
+	RedactedFields []string `json:"redacted_fields,omitempty" toml:"redacted_fields,omitempty"`
+	RedactionMode  string   `json:"redaction_mode,omitempty" toml:"redaction_mode,omitempty"`
 }
 
 type DeniedResourcesProvider interface {
 	// GetDeniedResources returns a list of GroupVersionKinds that are denied.
 	GetDeniedResources() []GroupVersionKind
+}
+
+// RedactedResourcesProvider provides access to resources that should have specific fields redacted.
+type RedactedResourcesProvider interface {
+	// GetRedactedResources returns a list of GroupVersionKinds with redacted field configurations.
+	GetRedactedResources() []GroupVersionKind
 }
 
 type StsConfigProvider interface {
@@ -96,6 +104,7 @@ type BaseConfig interface {
 	ClusterProvider
 	ConfirmationRulesProvider
 	DeniedResourcesProvider
+	RedactedResourcesProvider
 	ExtendedConfigProvider
 	StsConfigProvider
 	ValidationEnabledProvider

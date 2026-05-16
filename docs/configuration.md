@@ -369,13 +369,23 @@ description = "Get a Kubernetes resource by name. Always specify the namespace e
 
 ### Denied Resources
 
-Prevent access to specific Kubernetes resource types.
+Prevent access to specific Kubernetes resource types, or allow access with field-level redaction.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `denied_resources` | array | `[]` | List of GroupVersionKind objects that should not be accessible. |
+| `denied_resources` | array | `[]` | List of GroupVersionKind objects that should not be accessible (or should be accessible with redacted fields). |
 
-**Example:**
+Each entry in `denied_resources` supports the following fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `group` | string | required | API group (e.g. `""` for core, `"apps"` for apps/v1) |
+| `version` | string | required | API version (e.g. `"v1"`) |
+| `kind` | string | optional | Resource kind (e.g. `"Secret"`). If omitted, denies the entire group/version. |
+| `redacted_fields` | array | `[]` | Dot-separated field paths to redact instead of denying the resource entirely. Requires `kind` to be set. |
+| `redaction_mode` | string | `"opaque"` | How to redact values: `"opaque"` or `"hashed"`. |
+
+**Example — fully deny resources:**
 ```toml
 # Deny access to Secrets and ConfigMaps
 [[denied_resources]]
@@ -408,6 +418,56 @@ kind = "ClusterRole"
 group = "rbac.authorization.k8s.io"
 version = "v1"
 kind = "ClusterRoleBinding"
+```
+
+#### Field-Level Redaction
+
+Instead of fully denying a resource, you can allow access but redact sensitive fields. This is useful for resources like Secrets where the agent needs to see metadata (name, namespace, keys, type, ownership) but should not see actual values.
+
+When `redacted_fields` is set, the resource is allowed through the access control layer and the specified fields have their values replaced with a redaction marker before being returned.
+
+**Example — redact Secret values while keeping metadata and key names visible:**
+```toml
+[[denied_resources]]
+group = ""
+version = "v1"
+kind = "Secret"
+redacted_fields = ["data.*", "stringData.*"]
+redaction_mode = "hashed"
+```
+
+**Path syntax:**
+
+Fields are specified as dot-separated paths with `*` wildcard support. The wildcard adapts to the type it encounters — it iterates keys in a map and items in an array.
+
+| Path | Behavior |
+|------|----------|
+| `data.*` | Redact all values in a map (keys remain visible) |
+| `spec.credentials` | Redact a single field |
+| `spec.template.spec.containers.*.env.*.value` | Traverse arrays and maps to reach nested fields |
+
+**Redaction modes:**
+
+- `opaque` (default): replaces values with `[REDACTED]`
+- `hashed`: replaces values with `[REDACTED:gen_<id>:<hash>]`
+
+Hashed mode uses HMAC-SHA256 with a random salt generated once at server startup. This allows the agent to detect when two different resources reference the same value (e.g. two services using the same connection string) without exposing the actual content. The salt is never persisted and changes on restart. A generation ID is included so consumers can detect when the salt changed and know that hashes from different generations are not comparable.
+
+**More examples:**
+```toml
+# ConfigMap with sensitive data
+[[denied_resources]]
+group = ""
+version = "v1"
+kind = "ConfigMap"
+redacted_fields = ["data.*"]
+
+# CRD with embedded credentials
+[[denied_resources]]
+group = "db.example.com"
+version = "v1"
+kind = "DatabaseConnection"
+redacted_fields = ["spec.credentials.*", "spec.connectionString"]
 ```
 
 ### Server Instructions

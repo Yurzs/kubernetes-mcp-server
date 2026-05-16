@@ -6,12 +6,14 @@ import (
 	"fmt"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 
 	"github.com/containers/kubernetes-mcp-server/pkg/api"
 	"github.com/containers/kubernetes-mcp-server/pkg/kubernetes"
 	"github.com/containers/kubernetes-mcp-server/pkg/output"
+	"github.com/containers/kubernetes-mcp-server/pkg/redaction"
 )
 
 func initResources(o api.Openshift) []api.ServerTool {
@@ -225,6 +227,15 @@ func resourcesList(params api.ToolHandlerParams) (*api.ToolCallResult, error) {
 	if err != nil {
 		return api.NewToolCallResult("", fmt.Errorf("failed to list resources: %w", err)), nil
 	}
+	// Apply field-level redaction based on configuration
+	if redactedResources := params.BaseConfig.GetRedactedResources(); len(redactedResources) > 0 {
+		r := redaction.NewRedactor(redactedResources)
+		if ul, ok := ret.(*unstructured.UnstructuredList); ok {
+			r.ApplyToList(ul)
+		} else if u, ok := ret.(*unstructured.Unstructured); ok {
+			r.Apply(u)
+		}
+	}
 	return api.NewToolCallResult(params.ListOutput.PrintObj(ret)), nil
 }
 
@@ -256,6 +267,10 @@ func resourcesGet(params api.ToolHandlerParams) (*api.ToolCallResult, error) {
 	if err != nil {
 		return api.NewToolCallResult("", fmt.Errorf("failed to get resource: %w", err)), nil
 	}
+	// Apply field-level redaction based on configuration
+	if redactedResources := params.BaseConfig.GetRedactedResources(); len(redactedResources) > 0 {
+		redaction.NewRedactor(redactedResources).Apply(ret)
+	}
 	return api.NewToolCallResult(output.MarshalYaml(ret)), nil
 }
 
@@ -273,6 +288,13 @@ func resourcesCreateOrUpdate(params api.ToolHandlerParams) (*api.ToolCallResult,
 	resources, err := kubernetes.NewCore(params).ResourcesCreateOrUpdate(params, r)
 	if err != nil {
 		return api.NewToolCallResult("", fmt.Errorf("failed to create or update resources: %w", err)), nil
+	}
+	// Apply field-level redaction based on configuration
+	if redactedResources := params.BaseConfig.GetRedactedResources(); len(redactedResources) > 0 {
+		rd := redaction.NewRedactor(redactedResources)
+		for _, res := range resources {
+			rd.Apply(res)
+		}
 	}
 	marshalledYaml, err := output.MarshalYaml(resources)
 	if err != nil {

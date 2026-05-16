@@ -155,6 +155,11 @@ func (rt *AccessControlRoundTripper) isAllowed(
 	}
 
 	for _, val := range rt.deniedResourcesProvider.GetDeniedResources() {
+		// Entries with redacted_fields are not full denials — they allow access
+		// but specific fields will be redacted at the tool handler level.
+		if len(val.RedactedFields) > 0 {
+			continue
+		}
 		// If kind is empty, that means Group/Version pair is denied entirely
 		if val.Kind == "" {
 			if gvk.Group == val.Group && gvk.Version == val.Version {

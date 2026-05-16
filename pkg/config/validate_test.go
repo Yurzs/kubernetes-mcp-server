@@ -639,6 +639,103 @@ func (s *ValidateSuite) TestClusterAuthMode() {
 	})
 }
 
+func (s *ValidateSuite) TestRedactedResources() {
+	s.Run("redacted_fields without kind is rejected", func() {
+		cfg := s.validConfig()
+		cfg.DeniedResources = []api.GroupVersionKind{
+			{
+				Group:          "",
+				Version:        "v1",
+				RedactedFields: []string{"data.*"},
+			},
+		}
+		err := cfg.Validate()
+		s.Require().Error(err)
+		s.Contains(err.Error(), "redacted_fields requires kind to be set")
+	})
+
+	s.Run("invalid redaction_mode is rejected", func() {
+		cfg := s.validConfig()
+		cfg.DeniedResources = []api.GroupVersionKind{
+			{
+				Group:          "",
+				Version:        "v1",
+				Kind:           "Secret",
+				RedactedFields: []string{"data.*"},
+				RedactionMode:  "invalid-mode",
+			},
+		}
+		err := cfg.Validate()
+		s.Require().Error(err)
+		s.Contains(err.Error(), "invalid redaction_mode")
+		s.Contains(err.Error(), "invalid-mode")
+	})
+
+	s.Run("opaque redaction_mode is accepted", func() {
+		cfg := s.validConfig()
+		cfg.DeniedResources = []api.GroupVersionKind{
+			{
+				Group:          "",
+				Version:        "v1",
+				Kind:           "Secret",
+				RedactedFields: []string{"data.*"},
+				RedactionMode:  "opaque",
+			},
+		}
+		s.NoError(cfg.Validate())
+	})
+
+	s.Run("hashed redaction_mode is accepted", func() {
+		cfg := s.validConfig()
+		cfg.DeniedResources = []api.GroupVersionKind{
+			{
+				Group:          "",
+				Version:        "v1",
+				Kind:           "Secret",
+				RedactedFields: []string{"data.*"},
+				RedactionMode:  "hashed",
+			},
+		}
+		s.NoError(cfg.Validate())
+	})
+
+	s.Run("empty redaction_mode defaults to opaque and is accepted", func() {
+		cfg := s.validConfig()
+		cfg.DeniedResources = []api.GroupVersionKind{
+			{
+				Group:          "",
+				Version:        "v1",
+				Kind:           "Secret",
+				RedactedFields: []string{"data.*"},
+			},
+		}
+		s.NoError(cfg.Validate())
+	})
+
+	s.Run("denied_resources without redacted_fields is accepted", func() {
+		cfg := s.validConfig()
+		cfg.DeniedResources = []api.GroupVersionKind{
+			{
+				Group:   "",
+				Version: "v1",
+				Kind:    "Secret",
+			},
+		}
+		s.NoError(cfg.Validate())
+	})
+
+	s.Run("denied_resources without redacted_fields and without kind is accepted", func() {
+		cfg := s.validConfig()
+		cfg.DeniedResources = []api.GroupVersionKind{
+			{
+				Group:   "",
+				Version: "v1",
+			},
+		}
+		s.NoError(cfg.Validate())
+	})
+}
+
 func TestValidate(t *testing.T) {
 	suite.Run(t, new(ValidateSuite))
 }

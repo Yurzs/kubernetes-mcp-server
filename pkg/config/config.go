@@ -382,6 +382,16 @@ func (c *StaticConfig) GetDeniedResources() []api.GroupVersionKind {
 	return c.DeniedResources
 }
 
+func (c *StaticConfig) GetRedactedResources() []api.GroupVersionKind {
+	var redacted []api.GroupVersionKind
+	for _, dr := range c.DeniedResources {
+		if len(dr.RedactedFields) > 0 {
+			redacted = append(redacted, dr)
+		}
+	}
+	return redacted
+}
+
 func (c *StaticConfig) GetKubeConfigPath() string {
 	return c.KubeConfig
 }
@@ -549,6 +559,28 @@ func (c *StaticConfig) Validate() error {
 	}
 	if err := c.HTTP.Validate(); err != nil {
 		return err
+	}
+	if err := c.validateRedactedResources(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateRedactedResources validates redaction-related fields in denied_resources:
+//   - redacted_fields requires kind to be set (cannot redact fields on an entire group/version)
+//   - redaction_mode must be "opaque", "hashed", or empty (defaults to opaque)
+func (c *StaticConfig) validateRedactedResources() error {
+	for i, dr := range c.DeniedResources {
+		if len(dr.RedactedFields) == 0 {
+			continue
+		}
+		if dr.Kind == "" {
+			return fmt.Errorf("denied_resources[%d]: redacted_fields requires kind to be set", i)
+		}
+		mode := dr.RedactionMode
+		if mode != "" && mode != "opaque" && mode != "hashed" {
+			return fmt.Errorf("denied_resources[%d]: invalid redaction_mode %q, must be %q or %q", i, mode, "opaque", "hashed")
+		}
 	}
 	return nil
 }

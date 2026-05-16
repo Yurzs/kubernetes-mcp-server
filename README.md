@@ -222,11 +222,19 @@ log_level = 2
 read_only = true
 toolsets = ["core", "config", "helm", "kubevirt"]
 
-# Deny access to sensitive resources
+# Deny access to sensitive resources (fully blocked)
+[[denied_resources]]
+group = "rbac.authorization.k8s.io"
+version = "v1"
+kind = "ClusterRole"
+
+# Allow Secrets but redact their values (keys and metadata remain visible)
 [[denied_resources]]
 group = ""
 version = "v1"
 kind = "Secret"
+redacted_fields = ["data.*", "stringData.*"]
+redaction_mode = "hashed"
 
 [telemetry]
 endpoint = "http://localhost:4317"

@@ -7,5 +7,6 @@ import (
 	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kcp"
 	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kiali"
 	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kubevirt"
+	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/sealedsecrets"
 	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/tekton"
 )

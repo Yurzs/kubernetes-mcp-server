@@ -30,9 +30,10 @@ func initSealedSecrets() []api.ServerTool {
 			Tool: api.Tool{
 				Name: "sealed_secrets_update_key",
 				Description: "Add or update a key in an existing Bitnami SealedSecret. " +
-					"Generates a random secret value from a regex pattern, encrypts it with kubeseal, " +
-					"and returns the updated SealedSecret YAML. Does NOT write to the cluster — " +
-					"use the returned YAML in a merge request. The plaintext value is never exposed.",
+					"Encrypts a value with kubeseal and returns the updated SealedSecret YAML. " +
+					"Provide either \"value\" (existing data to seal) or \"pattern\" (to generate a random value). " +
+					"Does NOT write to the cluster — use the returned YAML in a merge request. " +
+					"The plaintext value is never exposed in the output.",
 				InputSchema: &jsonschema.Schema{
 					Type: "object",
 					Properties: map[string]*jsonschema.Schema{
@@ -46,11 +47,17 @@ func initSealedSecrets() []api.ServerTool {
 						},
 						"key": {
 							Type:        "string",
-							Description: "The secret data key to add or update (e.g. \"database-password\", \"api-token\")",
+							Description: "The secret data key to add or update (e.g. \"database-password\", \"api-token\", \"apns-key.p8\")",
+						},
+						"value": {
+							Type:        "string",
+							Description: "Existing secret value to encrypt (e.g. file contents, API key, certificate). " +
+								"Mutually exclusive with \"pattern\" — provide one or the other",
 						},
 						"pattern": {
 							Type: "string",
-							Description: "Regex-like pattern for generating the secret value. " +
+							Description: "Regex-like pattern for generating a random secret value. " +
+								"Mutually exclusive with \"value\" — provide one or the other. " +
 								"Supported: character classes [a-zA-Z0-9], shorthand \\d \\w, repetition {n} {n,m}, literals. " +
 								"Examples: \"[a-zA-Z0-9]{32}\" (alphanumeric), \"[a-f0-9]{64}\" (hex), \"sk_live_\\w{24}\" (prefixed key)",
 						},
@@ -68,7 +75,7 @@ func initSealedSecrets() []api.ServerTool {
 							Description: "Name of the sealed-secrets controller (Optional, default \"sealed-secrets-controller\")",
 						},
 					},
-					Required: []string{"name", "namespace", "key", "pattern"},
+					Required: []string{"name", "namespace", "key"},
 				},
 				Annotations: api.ToolAnnotations{
 					Title:           "Sealed Secrets: Update Key",
@@ -83,8 +90,8 @@ func initSealedSecrets() []api.ServerTool {
 		{
 			Tool: api.Tool{
 				Name: "sealed_secrets_create",
-				Description: "Create a new Bitnami SealedSecret with one or more generated keys. " +
-					"Each key gets a random value from a regex pattern, encrypted with kubeseal. " +
+				Description: "Create a new Bitnami SealedSecret with one or more keys. " +
+					"Each key can use either \"value\" (existing data to seal) or \"pattern\" (to generate a random value). " +
 					"Returns SealedSecret YAML without writing to the cluster. Plaintext is never exposed.",
 				InputSchema: &jsonschema.Schema{
 					Type: "object",
@@ -98,8 +105,9 @@ func initSealedSecrets() []api.ServerTool {
 							Description: "Namespace for the new SealedSecret",
 						},
 						"keys": {
-							Type:        "array",
-							Description: "List of secret keys to generate. Each entry has \"key\" (name) and \"pattern\" (regex for value generation)",
+							Type: "array",
+							Description: "List of secret keys. Each entry has \"key\" (name) and either " +
+								"\"value\" (existing data) or \"pattern\" (regex for random generation)",
 							Items: &jsonschema.Schema{
 								Type: "object",
 								Properties: map[string]*jsonschema.Schema{
@@ -107,12 +115,16 @@ func initSealedSecrets() []api.ServerTool {
 										Type:        "string",
 										Description: "Secret data key name",
 									},
+									"value": {
+										Type:        "string",
+										Description: "Existing secret value to encrypt (e.g. file contents, API key, certificate)",
+									},
 									"pattern": {
 										Type:        "string",
-										Description: "Regex-like pattern for value generation",
+										Description: "Regex-like pattern for random value generation",
 									},
 								},
-								Required: []string{"key", "pattern"},
+								Required: []string{"key"},
 							},
 						},
 						"scope": {
@@ -149,7 +161,8 @@ func sealedSecretsUpdateKey(params api.ToolHandlerParams) (*api.ToolCallResult, 
 	name := p.RequiredString("name")
 	namespace := p.RequiredString("namespace")
 	key := p.RequiredString("key")
-	pattern := p.RequiredString("pattern")
+	value := p.OptionalString("value", "")
+	pattern := p.OptionalString("pattern", "")
 	scope := p.OptionalString("scope", "strict")
 	ctrlNs := p.OptionalString("controller_namespace", "kube-system")
 	ctrlName := p.OptionalString("controller_name", "sealed-secrets-controller")
@@ -158,6 +171,12 @@ func sealedSecretsUpdateKey(params api.ToolHandlerParams) (*api.ToolCallResult, 
 	}
 
 	if err := validateScope(scope); err != nil {
+		return api.NewToolCallResult("", err), nil
+	}
+
+	// Resolve the plaintext: either use the provided value or generate from pattern
+	plaintext, err := resolveValue(value, pattern)
+	if err != nil {
 		return api.NewToolCallResult("", err), nil
 	}
 
@@ -175,8 +194,8 @@ func sealedSecretsUpdateKey(params api.ToolHandlerParams) (*api.ToolCallResult, 
 		return api.NewToolCallResult("", err), nil
 	}
 
-	// Generate and encrypt value
-	encrypted, err := generateAndEncrypt(params.Context, certPEM, pattern, namespace, name, scope)
+	// Encrypt the value with kubeseal
+	encrypted, err := kubesealRaw(params.Context, certPEM, plaintext, namespace, name, scope)
 	if err != nil {
 		return api.NewToolCallResult("", err), nil
 	}
@@ -242,15 +261,21 @@ func sealedSecretsCreate(params api.ToolHandlerParams) (*api.ToolCallResult, err
 	for i, entry := range keysArr {
 		entryMap, ok := entry.(map[string]interface{})
 		if !ok {
-			return api.NewToolCallResult("", fmt.Errorf("keys[%d]: must be an object with \"key\" and \"pattern\"", i)), nil
+			return api.NewToolCallResult("", fmt.Errorf("keys[%d]: must be an object with \"key\" and either \"value\" or \"pattern\"", i)), nil
 		}
 		keyName, _ := entryMap["key"].(string)
-		pattern, _ := entryMap["pattern"].(string)
-		if keyName == "" || pattern == "" {
-			return api.NewToolCallResult("", fmt.Errorf("keys[%d]: both \"key\" and \"pattern\" are required", i)), nil
+		entryValue, _ := entryMap["value"].(string)
+		entryPattern, _ := entryMap["pattern"].(string)
+		if keyName == "" {
+			return api.NewToolCallResult("", fmt.Errorf("keys[%d]: \"key\" is required", i)), nil
 		}
 
-		encrypted, err := generateAndEncrypt(params.Context, certPEM, pattern, namespace, name, scope)
+		plaintext, err := resolveValue(entryValue, entryPattern)
+		if err != nil {
+			return api.NewToolCallResult("", fmt.Errorf("keys[%d] (%s): %w", i, keyName, err)), nil
+		}
+
+		encrypted, err := kubesealRaw(params.Context, certPEM, plaintext, namespace, name, scope)
 		if err != nil {
 			return api.NewToolCallResult("", fmt.Errorf("keys[%d] (%s): %w", i, keyName, err)), nil
 		}
@@ -300,29 +325,45 @@ func sealedSecretsCreate(params api.ToolHandlerParams) (*api.ToolCallResult, err
 }
 
 // fetchControllerCert retrieves the sealed-secrets controller's public certificate
-// via the k8s API service proxy, using the MCP server's existing k8s client.
-// This avoids kubeseal needing its own k8s access.
-func fetchControllerCert(ctx context.Context, client api.KubernetesClient, ctrlNs, ctrlName string) ([]byte, error) {
-	// The sealed-secrets controller exposes its cert at /v1/cert.pem via a Service.
-	// We use the k8s API server's service proxy to reach it.
-	result := client.CoreV1().Services(ctrlNs).ProxyGet("http", ctrlName, "", "/v1/cert.pem", nil)
-	raw, err := result.DoRaw(ctx)
-	if err != nil {
+// by shelling out to `kubeseal --fetch-cert`. This is more reliable than using the
+// k8s API server's service proxy (ProxyGet), which can fail with 503 errors
+// depending on the cluster's network configuration.
+func fetchControllerCert(_ context.Context, _ api.KubernetesClient, ctrlNs, ctrlName string) ([]byte, error) {
+	cmd := exec.Command("kubeseal", "--fetch-cert",
+		"--controller-namespace", ctrlNs,
+		"--controller-name", ctrlName,
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf(
-			"failed to fetch sealed-secrets controller certificate from %s/%s: %w\n"+
-				"Ensure the sealed-secrets controller is running and the service is accessible",
-			ctrlNs, ctrlName, err,
+			"failed to fetch sealed-secrets controller certificate from %s/%s: %s\n"+
+				"Ensure the sealed-secrets controller is running and kubeseal can reach it",
+			ctrlNs, ctrlName, strings.TrimSpace(stderr.String()),
 		)
 	}
+	raw := stdout.Bytes()
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("sealed-secrets controller returned empty certificate")
 	}
 	return raw, nil
 }
 
-// generateAndEncrypt generates a random value from the pattern, then encrypts it with kubeseal --raw.
-func generateAndEncrypt(ctx context.Context, certPEM []byte, pattern, namespace, name, scope string) (string, error) {
-	// Generate random value from pattern
+// resolveValue returns the plaintext to encrypt: either the provided value directly,
+// or a randomly generated value from the pattern. Exactly one must be provided.
+func resolveValue(value, pattern string) (string, error) {
+	if value != "" && pattern != "" {
+		return "", fmt.Errorf("provide either \"value\" or \"pattern\", not both")
+	}
+	if value == "" && pattern == "" {
+		return "", fmt.Errorf("provide either \"value\" (existing data to seal) or \"pattern\" (to generate a random value)")
+	}
+
+	if value != "" {
+		return value, nil
+	}
+
 	plaintext, err := generateFromPattern(pattern)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate value from pattern %q: %w", pattern, err)
@@ -330,14 +371,7 @@ func generateAndEncrypt(ctx context.Context, certPEM []byte, pattern, namespace,
 	if plaintext == "" {
 		return "", fmt.Errorf("pattern %q produced empty value", pattern)
 	}
-
-	// Encrypt with kubeseal --raw using the pre-fetched certificate
-	encrypted, err := kubesealRaw(ctx, certPEM, plaintext, namespace, name, scope)
-	if err != nil {
-		return "", err
-	}
-
-	return encrypted, nil
+	return plaintext, nil
 }
 
 // kubesealRaw encrypts a single value using kubeseal --raw with a pre-fetched
